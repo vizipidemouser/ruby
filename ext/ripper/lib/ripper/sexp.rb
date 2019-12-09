@@ -1,4 +1,4 @@
-# frozen_string_literal: false
+# frozen_string_literal: true
 #
 # $Id$
 #
@@ -25,7 +25,7 @@ class Ripper
   #     #=> [:program,
   #          [[:def,
   #           [:@ident, "m", [1, 4]],
-  #           [:paren, [:params, [[:@ident, "a", [1, 6]]], nil, nil, nil, nil]],
+  #           [:paren, [:params, [[:@ident, "a", [1, 6]]], nil, nil, nil, nil, nil, nil]],
   #           [:bodystmt, [[:var_ref, [:@kw, "nil", [1, 9]]]], nil, nil, nil]]]]
   #
   def Ripper.sexp(src, filename = '-', lineno = 1)
@@ -132,6 +132,18 @@ class Ripper
     def _dispatch_event_push(list, item)
       list.push item
       list
+    end
+
+    def on_mlhs_paren(list)
+      [:mlhs, *list]
+    end
+
+    def on_mlhs_add_star(list, star)
+      list.push([:rest_param, star])
+    end
+
+    def on_mlhs_add_post(list, post)
+      list.concat(post)
     end
 
     PARSER_EVENT_TABLE.each do |event, arity|

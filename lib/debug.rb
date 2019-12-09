@@ -1,14 +1,9 @@
-# frozen_string_literal: false
+# frozen_string_literal: true
 # Copyright (C) 2000  Network Applied Communication Laboratory, Inc.
 # Copyright (C) 2000  Information-technology Promotion Agency, Japan
 # Copyright (C) 2000-2003  NAKAMURA, Hiroshi  <nahi@ruby-lang.org>
 
 require 'continuation'
-
-if $SAFE > 0
-  STDERR.print "-r debug.rb is not available in safe mode\n"
-  exit 1
-end
 
 require 'tracer'
 require 'pp'
@@ -432,7 +427,7 @@ class DEBUGGER__
             pos = $2
             if $1
               klass = debug_silent_eval($1, binding)
-              file = $1
+              file = File.expand_path($1)
             end
             if pos =~ /^\d+$/
               pname = pos

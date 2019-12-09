@@ -1,4 +1,4 @@
-# frozen_string_literal: false
+# frozen_string_literal: true
 require 'test/unit'
 require 'date'
 
@@ -46,6 +46,24 @@ class TestDateConv < Test::Unit::TestCase
     t = d.to_time
     assert_equal([2004, 9, 19, 0, 0, 0, 0],
 		 [t.year, t.mon, t.mday, t.hour, t.min, t.sec, t.usec])
+  end
+
+  def test_to_time_to_date_roundtrip__from_gregorian_date
+    d = Date.new(1582, 10, 15)
+    t = d.to_time
+    assert_equal([1582, 10, 15, 0, 0, 0, 0],
+		 [t.year, t.mon, t.mday, t.hour, t.min, t.sec, t.usec])
+    assert_equal(d, t.to_date)
+    assert_equal(d.jd, t.to_date.jd)
+  end
+
+  def test_to_time_to_date_roundtrip__from_julian_date
+    d = Date.new(1582, 10, 4)
+    t = d.to_time
+    assert_equal([1582, 10, 14, 0, 0, 0, 0],
+		 [t.year, t.mon, t.mday, t.hour, t.min, t.sec, t.usec])
+    assert_equal(d, t.to_date)
+    assert_equal(d.jd, t.to_date.jd)
   end
 
   def test_to_time__from_datetime

@@ -9,10 +9,13 @@
 
 **********************************************************************/
 
+#include "ruby/encoding.h"
 #include "internal.h"
 #include <sys/types.h>
 #include <ctype.h>
 #include <errno.h>
+#include <float.h>
+#include "builtin.h"
 
 /*
  * It is intentional that the condition for natstr is HAVE_TRUE_LONG_LONG
@@ -41,20 +44,20 @@ static const char endstr[] = "sSiIlLqQjJ";
 #endif
 
 #ifdef DYNAMIC_ENDIAN
- /* for universal binary of NEXTSTEP and MacOS X */
- /* useless since autoconf 2.63? */
- static int
- is_bigendian(void)
- {
-     static int init = 0;
-     static int endian_value;
-     char *p;
+/* for universal binary of NEXTSTEP and MacOS X */
+/* useless since autoconf 2.63? */
+static int
+is_bigendian(void)
+{
+    static int init = 0;
+    static int endian_value;
+    char *p;
 
-     if (init) return endian_value;
-     init = 1;
-     p = (char*)&init;
-     return endian_value = p[0]?0:1;
- }
+    if (init) return endian_value;
+    init = 1;
+    p = (char*)&init;
+    return endian_value = p[0]?0:1;
+}
 # define BIGENDIAN_P() (is_bigendian())
 #elif defined(WORDS_BIGENDIAN)
 # define BIGENDIAN_P() 1
@@ -126,136 +129,49 @@ str_associated(VALUE str)
     return rb_ivar_lookup(str, id_associated, Qfalse);
 }
 
-void
-rb_str_associate(VALUE str, VALUE add)
+static void
+unknown_directive(const char *mode, char type, VALUE fmt)
 {
-    ONLY_FOR_INTERNAL_USE("rb_str_associate()");
+    VALUE f;
+    char unknown[5];
+
+    if (ISPRINT(type)) {
+        unknown[0] = type;
+        unknown[1] = '\0';
+    }
+    else {
+        snprintf(unknown, sizeof(unknown), "\\x%.2x", type & 0xff);
+    }
+    f = rb_str_quote_unprintable(fmt);
+    if (f != fmt) {
+        fmt = rb_str_subseq(f, 1, RSTRING_LEN(f) - 2);
+    }
+    rb_warning("unknown %s directive '%s' in '%"PRIsVALUE"'",
+               mode, unknown, fmt);
 }
 
-VALUE
-rb_str_associated(VALUE str)
+static float
+VALUE_to_float(VALUE obj)
 {
-    ONLY_FOR_INTERNAL_USE("rb_str_associated()");
-}
+    VALUE v = rb_to_float(obj);
+    double d = RFLOAT_VALUE(v);
 
-/*
- *  call-seq:
- *     arr.pack ( aTemplateString ) -> aBinaryString
- *
- *  Packs the contents of <i>arr</i> into a binary sequence according to
- *  the directives in <i>aTemplateString</i> (see the table below)
- *  Directives ``A,'' ``a,'' and ``Z'' may be followed by a count,
- *  which gives the width of the resulting field. The remaining
- *  directives also may take a count, indicating the number of array
- *  elements to convert. If the count is an asterisk
- *  (``<code>*</code>''), all remaining array elements will be
- *  converted. Any of the directives ``<code>sSiIlL</code>'' may be
- *  followed by an underscore (``<code>_</code>'') or
- *  exclamation mark (``<code>!</code>'') to use the underlying
- *  platform's native size for the specified type; otherwise, they use a
- *  platform-independent size. Spaces are ignored in the template
- *  string. See also <code>String#unpack</code>.
- *
- *     a = [ "a", "b", "c" ]
- *     n = [ 65, 66, 67 ]
- *     a.pack("A3A3A3")   #=> "a  b  c  "
- *     a.pack("a3a3a3")   #=> "a\000\000b\000\000c\000\000"
- *     n.pack("ccc")      #=> "ABC"
- *
- *  Directives for +pack+.
- *
- *   Integer       | Array   |
- *   Directive     | Element | Meaning
- *   ----------------------------------------------------------------------------
- *   C             | Integer | 8-bit unsigned (unsigned char)
- *   S             | Integer | 16-bit unsigned, native endian (uint16_t)
- *   L             | Integer | 32-bit unsigned, native endian (uint32_t)
- *   Q             | Integer | 64-bit unsigned, native endian (uint64_t)
- *   J             | Integer | pointer width unsigned, native endian (uintptr_t)
- *                 |         | (J is available since Ruby 2.3.)
- *                 |         |
- *   c             | Integer | 8-bit signed (signed char)
- *   s             | Integer | 16-bit signed, native endian (int16_t)
- *   l             | Integer | 32-bit signed, native endian (int32_t)
- *   q             | Integer | 64-bit signed, native endian (int64_t)
- *   j             | Integer | pointer width signed, native endian (intptr_t)
- *                 |         | (j is available since Ruby 2.3.)
- *                 |         |
- *   S_ S!         | Integer | unsigned short, native endian
- *   I I_ I!       | Integer | unsigned int, native endian
- *   L_ L!         | Integer | unsigned long, native endian
- *   Q_ Q!         | Integer | unsigned long long, native endian (ArgumentError
- *                 |         | if the platform has no long long type.)
- *                 |         | (Q_ and Q! is available since Ruby 2.1.)
- *   J!            | Integer | uintptr_t, native endian (same with J)
- *                 |         | (J! is available since Ruby 2.3.)
- *                 |         |
- *   s_ s!         | Integer | signed short, native endian
- *   i i_ i!       | Integer | signed int, native endian
- *   l_ l!         | Integer | signed long, native endian
- *   q_ q!         | Integer | signed long long, native endian (ArgumentError
- *                 |         | if the platform has no long long type.)
- *                 |         | (q_ and q! is available since Ruby 2.1.)
- *   j!            | Integer | intptr_t, native endian (same with j)
- *                 |         | (j! is available since Ruby 2.3.)
- *                 |         |
- *   S> s> S!> s!> | Integer | same as the directives without ">" except
- *   L> l> L!> l!> |         | big endian
- *   I!> i!>       |         | (available since Ruby 1.9.3)
- *   Q> q> Q!> q!> |         | "S>" is same as "n"
- *   J> j> J!> j!> |         | "L>" is same as "N"
- *                 |         |
- *   S< s< S!< s!< | Integer | same as the directives without "<" except
- *   L< l< L!< l!< |         | little endian
- *   I!< i!<       |         | (available since Ruby 1.9.3)
- *   Q< q< Q!< q!< |         | "S<" is same as "v"
- *   J< j< J!< j!< |         | "L<" is same as "V"
- *                 |         |
- *   n             | Integer | 16-bit unsigned, network (big-endian) byte order
- *   N             | Integer | 32-bit unsigned, network (big-endian) byte order
- *   v             | Integer | 16-bit unsigned, VAX (little-endian) byte order
- *   V             | Integer | 32-bit unsigned, VAX (little-endian) byte order
- *                 |         |
- *   U             | Integer | UTF-8 character
- *   w             | Integer | BER-compressed integer
- *
- *   Float        | Array   |
- *   Directive    | Element | Meaning
- *   ---------------------------------------------------------------------------
- *   D d          | Float   | double-precision, native format
- *   F f          | Float   | single-precision, native format
- *   E            | Float   | double-precision, little-endian byte order
- *   e            | Float   | single-precision, little-endian byte order
- *   G            | Float   | double-precision, network (big-endian) byte order
- *   g            | Float   | single-precision, network (big-endian) byte order
- *
- *   String       | Array   |
- *   Directive    | Element | Meaning
- *   ---------------------------------------------------------------------------
- *   A            | String  | arbitrary binary string (space padded, count is width)
- *   a            | String  | arbitrary binary string (null padded, count is width)
- *   Z            | String  | same as ``a'', except that null is added with *
- *   B            | String  | bit string (MSB first)
- *   b            | String  | bit string (LSB first)
- *   H            | String  | hex string (high nibble first)
- *   h            | String  | hex string (low nibble first)
- *   u            | String  | UU-encoded string
- *   M            | String  | quoted printable, MIME encoding (see RFC2045)
- *   m            | String  | base64 encoded string (see RFC 2045, count is width)
- *                |         | (if count is 0, no line feed are added, see RFC 4648)
- *   P            | String  | pointer to a structure (fixed-length string)
- *   p            | String  | pointer to a null-terminated string
- *
- *   Misc.        | Array   |
- *   Directive    | Element | Meaning
- *   ---------------------------------------------------------------------------
- *   @            | ---     | moves to absolute position
- *   X            | ---     | back up a byte
- *   x            | ---     | null byte
- */
+    if (isnan(d)) {
+        return NAN;
+    }
+    else if (d < -FLT_MAX) {
+        return -INFINITY;
+    }
+    else if (d <= FLT_MAX) {
+        return d;
+    }
+    else {
+        return INFINITY;
+    }
+}
 
 static VALUE
-pack_pack(VALUE ary, VALUE fmt)
+pack_pack(rb_execution_context_t *ec, VALUE ary, VALUE fmt, VALUE buffer)
 {
     static const char nul10[] = "\0\0\0\0\0\0\0\0\0\0";
     static const char spc10[] = "          ";
@@ -273,7 +189,15 @@ pack_pack(VALUE ary, VALUE fmt)
     StringValue(fmt);
     p = RSTRING_PTR(fmt);
     pend = p + RSTRING_LEN(fmt);
-    res = rb_str_buf_new(0);
+
+    if (NIL_P(buffer)) {
+	res = rb_str_buf_new(0);
+    }
+    else {
+        if (!RB_TYPE_P(buffer, T_STRING))
+            rb_raise(rb_eTypeError, "buffer must be String, not %s", rb_obj_classname(buffer));
+	res = buffer;
+    }
 
     idx = 0;
 
@@ -372,7 +296,6 @@ pack_pack(VALUE ary, VALUE fmt)
 		StringValue(from);
 		ptr = RSTRING_PTR(from);
 		plen = RSTRING_LEN(from);
-		OBJ_INFECT(res, from);
 	    }
 
 	    if (p[-1] == '*')
@@ -624,7 +547,7 @@ pack_pack(VALUE ary, VALUE fmt)
 		float f;
 
 		from = NEXTFROM;
-		f = (float)RFLOAT_VALUE(rb_to_float(from));
+                f = VALUE_to_float(from);
 		rb_str_buf_cat(res, (char*)&f, sizeof(float));
 	    }
 	    break;
@@ -634,7 +557,7 @@ pack_pack(VALUE ary, VALUE fmt)
 		FLOAT_CONVWITH(tmp);
 
 		from = NEXTFROM;
-		tmp.f = (float)RFLOAT_VALUE(rb_to_float(from));
+                tmp.f = VALUE_to_float(from);
 		HTOVF(tmp);
 		rb_str_buf_cat(res, tmp.buf, sizeof(float));
 	    }
@@ -665,7 +588,7 @@ pack_pack(VALUE ary, VALUE fmt)
 	    while (len-- > 0) {
 		FLOAT_CONVWITH(tmp);
 		from = NEXTFROM;
-		tmp.f = (float)RFLOAT_VALUE(rb_to_float(from));
+                tmp.f = VALUE_to_float(from);
 		HTONF(tmp);
 		rb_str_buf_cat(res, tmp.buf, sizeof(float));
 	    }
@@ -785,7 +708,6 @@ pack_pack(VALUE ary, VALUE fmt)
 		}
 		else {
 		    t = StringValuePtr(from);
-		    rb_obj_taint(from);
 		}
 		if (!associates) {
 		    associates = rb_ary_new();
@@ -818,9 +740,9 @@ pack_pack(VALUE ary, VALUE fmt)
 
                 cp = RSTRING_PTR(buf);
                 while (1 < numbytes) {
-                  *cp |= 0x80;
-                  cp++;
-                  numbytes--;
+                    *cp |= 0x80;
+                    cp++;
+                    numbytes--;
                 }
 
                 rb_str_buf_cat(res, RSTRING_PTR(buf), RSTRING_LEN(buf));
@@ -828,16 +750,7 @@ pack_pack(VALUE ary, VALUE fmt)
 	    break;
 
 	  default: {
-	    char unknown[5];
-	    if (ISPRINT(type)) {
-		unknown[0] = type;
-		unknown[1] = '\0';
-	    }
-	    else {
-		snprintf(unknown, sizeof(unknown), "\\x%.2x", type & 0xff);
-	    }
-	    rb_warning("unknown pack directive '%s' in '% "PRIsVALUE"'",
-		       unknown, fmt);
+            unknown_directive("pack", type, fmt);
 	    break;
 	  }
 	}
@@ -846,7 +759,6 @@ pack_pack(VALUE ary, VALUE fmt)
     if (associates) {
 	str_associate(res, associates);
     }
-    OBJ_INFECT(res, fmt);
     switch (enc_info) {
       case 1:
 	ENCODING_CODERANGE_SET(res, rb_usascii_encindex(), ENC_CODERANGE_7BIT);
@@ -984,157 +896,34 @@ hex2num(char c)
     tmp_len = 0;				\
     if (len > (long)((send-s)/(sz))) {		\
         if (!star) {				\
-	    tmp_len = len-(send-s)/(sz);		\
+	    tmp_len = len-(send-s)/(sz);	\
         }					\
 	len = (send-s)/(sz);			\
     }						\
 } while (0)
 
 #define PACK_ITEM_ADJUST() do { \
-    if (tmp_len > 0 && !block_p) \
+    if (tmp_len > 0 && mode == UNPACK_ARRAY) \
 	rb_ary_store(ary, RARRAY_LEN(ary)+tmp_len-1, Qnil); \
 } while (0)
 
-/* Workaround for Oracle Solaris Studio 12.4 C compiler optimization bug
+/* Workaround for Oracle Developer Studio (Oracle Solaris Studio)
+ * 12.4/12.5/12.6 C compiler optimization bug
  * with "-xO4" optimization option.
  */
-#if defined(__SUNPRO_C) && __SUNPRO_C == 0x5130
+#if defined(__SUNPRO_C) && 0x5130 <= __SUNPRO_C && __SUNPRO_C <= 0x5150
 # define AVOID_CC_BUG volatile
 #else
 # define AVOID_CC_BUG
 #endif
 
-static VALUE
-infected_str_new(const char *ptr, long len, VALUE str)
-{
-    VALUE s = rb_str_new(ptr, len);
-
-    OBJ_INFECT(s, str);
-    return s;
-}
-
-/*
- *  call-seq:
- *     str.unpack(format)    ->  anArray
- *
- *  Decodes <i>str</i> (which may contain binary data) according to the
- *  format string, returning an array of each value extracted. The
- *  format string consists of a sequence of single-character directives,
- *  summarized in the table at the end of this entry.
- *  Each directive may be followed
- *  by a number, indicating the number of times to repeat with this
- *  directive. An asterisk (``<code>*</code>'') will use up all
- *  remaining elements. The directives <code>sSiIlL</code> may each be
- *  followed by an underscore (``<code>_</code>'') or
- *  exclamation mark (``<code>!</code>'') to use the underlying
- *  platform's native size for the specified type; otherwise, it uses a
- *  platform-independent consistent size. Spaces are ignored in the
- *  format string. See also <code>Array#pack</code>.
- *
- *     "abc \0\0abc \0\0".unpack('A6Z6')   #=> ["abc", "abc "]
- *     "abc \0\0".unpack('a3a3')           #=> ["abc", " \000\000"]
- *     "abc \0abc \0".unpack('Z*Z*')       #=> ["abc ", "abc "]
- *     "aa".unpack('b8B8')                 #=> ["10000110", "01100001"]
- *     "aaa".unpack('h2H2c')               #=> ["16", "61", 97]
- *     "\xfe\xff\xfe\xff".unpack('sS')     #=> [-2, 65534]
- *     "now=20is".unpack('M*')             #=> ["now is"]
- *     "whole".unpack('xax2aX2aX1aX2a')    #=> ["h", "e", "l", "l", "o"]
- *
- *  This table summarizes the various formats and the Ruby classes
- *  returned by each.
- *
- *   Integer       |         |
- *   Directive     | Returns | Meaning
- *   ------------------------------------------------------------------
- *   C             | Integer | 8-bit unsigned (unsigned char)
- *   S             | Integer | 16-bit unsigned, native endian (uint16_t)
- *   L             | Integer | 32-bit unsigned, native endian (uint32_t)
- *   Q             | Integer | 64-bit unsigned, native endian (uint64_t)
- *   J             | Integer | pointer width unsigned, native endian (uintptr_t)
- *                 |         | (J is available since Ruby 2.3.)
- *                 |         |
- *   c             | Integer | 8-bit signed (signed char)
- *   s             | Integer | 16-bit signed, native endian (int16_t)
- *   l             | Integer | 32-bit signed, native endian (int32_t)
- *   q             | Integer | 64-bit signed, native endian (int64_t)
- *   j             | Integer | pointer width signed, native endian (intptr_t)
- *                 |         | (j is available since Ruby 2.3.)
- *                 |         |
- *   S_ S!         | Integer | unsigned short, native endian
- *   I I_ I!       | Integer | unsigned int, native endian
- *   L_ L!         | Integer | unsigned long, native endian
- *   Q_ Q!         | Integer | unsigned long long, native endian (ArgumentError
- *                 |         | if the platform has no long long type.)
- *                 |         | (Q_ and Q! is available since Ruby 2.1.)
- *   J!            | Integer | uintptr_t, native endian (same with J)
- *                 |         | (J! is available since Ruby 2.3.)
- *                 |         |
- *   s_ s!         | Integer | signed short, native endian
- *   i i_ i!       | Integer | signed int, native endian
- *   l_ l!         | Integer | signed long, native endian
- *   q_ q!         | Integer | signed long long, native endian (ArgumentError
- *                 |         | if the platform has no long long type.)
- *                 |         | (q_ and q! is available since Ruby 2.1.)
- *   j!            | Integer | intptr_t, native endian (same with j)
- *                 |         | (j! is available since Ruby 2.3.)
- *                 |         |
- *   S> s> S!> s!> | Integer | same as the directives without ">" except
- *   L> l> L!> l!> |         | big endian
- *   I!> i!>       |         | (available since Ruby 1.9.3)
- *   Q> q> Q!> q!> |         | "S>" is same as "n"
- *   J> j> J!> j!> |         | "L>" is same as "N"
- *                 |         |
- *   S< s< S!< s!< | Integer | same as the directives without "<" except
- *   L< l< L!< l!< |         | little endian
- *   I!< i!<       |         | (available since Ruby 1.9.3)
- *   Q< q< Q!< q!< |         | "S<" is same as "v"
- *   J< j< J!< j!< |         | "L<" is same as "V"
- *                 |         |
- *   n             | Integer | 16-bit unsigned, network (big-endian) byte order
- *   N             | Integer | 32-bit unsigned, network (big-endian) byte order
- *   v             | Integer | 16-bit unsigned, VAX (little-endian) byte order
- *   V             | Integer | 32-bit unsigned, VAX (little-endian) byte order
- *                 |         |
- *   U             | Integer | UTF-8 character
- *   w             | Integer | BER-compressed integer (see Array.pack)
- *
- *   Float        |         |
- *   Directive    | Returns | Meaning
- *   -----------------------------------------------------------------
- *   D d          | Float   | double-precision, native format
- *   F f          | Float   | single-precision, native format
- *   E            | Float   | double-precision, little-endian byte order
- *   e            | Float   | single-precision, little-endian byte order
- *   G            | Float   | double-precision, network (big-endian) byte order
- *   g            | Float   | single-precision, network (big-endian) byte order
- *
- *   String       |         |
- *   Directive    | Returns | Meaning
- *   -----------------------------------------------------------------
- *   A            | String  | arbitrary binary string (remove trailing nulls and ASCII spaces)
- *   a            | String  | arbitrary binary string
- *   Z            | String  | null-terminated string
- *   B            | String  | bit string (MSB first)
- *   b            | String  | bit string (LSB first)
- *   H            | String  | hex string (high nibble first)
- *   h            | String  | hex string (low nibble first)
- *   u            | String  | UU-encoded string
- *   M            | String  | quoted-printable, MIME encoding (see RFC2045)
- *   m            | String  | base64 encoded string (RFC 2045) (default)
- *                |         | base64 encoded string (RFC 4648) if followed by 0
- *   P            | String  | pointer to a structure (fixed-length string)
- *   p            | String  | pointer to a null-terminated string
- *
- *   Misc.        |         |
- *   Directive    | Returns | Meaning
- *   -----------------------------------------------------------------
- *   @            | ---     | skip to the offset given by the length argument
- *   X            | ---     | skip backward one byte
- *   x            | ---     | skip forward one byte
- */
+/* unpack mode */
+#define UNPACK_ARRAY 0
+#define UNPACK_BLOCK 1
+#define UNPACK_1 2
 
 static VALUE
-pack_unpack(VALUE str, VALUE fmt)
+pack_unpack_internal(VALUE str, VALUE fmt, int mode)
 {
 #define hexdigits ruby_hexdigits
     char *s, *send;
@@ -1147,15 +936,17 @@ pack_unpack(VALUE str, VALUE fmt)
 #ifdef NATINT_PACK
     int natint;			/* native integer */
 #endif
-    int block_p = rb_block_given_p();
     int signed_p, integer_size, bigendian_p;
 #define UNPACK_PUSH(item) do {\
 	VALUE item_val = (item);\
-	if (block_p) {\
+	if ((mode) == UNPACK_BLOCK) {\
 	    rb_yield(item_val);\
 	}\
-	else {\
+	else if ((mode) == UNPACK_ARRAY) {\
 	    rb_ary_push(ary, item_val);\
+	}\
+	else /* if ((mode) == UNPACK_1) { */ {\
+	    return item_val; \
 	}\
     } while (0)
 
@@ -1166,7 +957,7 @@ pack_unpack(VALUE str, VALUE fmt)
     p = RSTRING_PTR(fmt);
     pend = p + RSTRING_LEN(fmt);
 
-    ary = block_p ? Qnil : rb_ary_new();
+    ary = mode == UNPACK_ARRAY ? rb_ary_new() : Qnil;
     while (p < pend) {
 	int explicit_endian = 0;
 	type = *p++;
@@ -1223,7 +1014,7 @@ pack_unpack(VALUE str, VALUE fmt)
 	else if (ISDIGIT(*p)) {
 	    errno = 0;
 	    len = STRTOUL(p, (char**)&p, 10);
-	    if (errno) {
+	    if (len < 0 || errno) {
 		rb_raise(rb_eRangeError, "pack length too big");
 	    }
 	}
@@ -1246,7 +1037,7 @@ pack_unpack(VALUE str, VALUE fmt)
 		    if (*t != ' ' && *t != '\0') break;
 		    t--; len--;
 		}
-		UNPACK_PUSH(infected_str_new(s, len, str));
+                UNPACK_PUSH(rb_str_new(s, len));
 		s += end;
 	    }
 	    break;
@@ -1257,7 +1048,7 @@ pack_unpack(VALUE str, VALUE fmt)
 
 		if (len > send-s) len = send-s;
 		while (t < s+len && *t) t++;
-		UNPACK_PUSH(infected_str_new(s, t-s, str));
+                UNPACK_PUSH(rb_str_new(s, t-s));
 		if (t < send) t++;
 		s = star ? t : s+len;
 	    }
@@ -1265,7 +1056,7 @@ pack_unpack(VALUE str, VALUE fmt)
 
 	  case 'a':
 	    if (len > send - s) len = send - s;
-	    UNPACK_PUSH(infected_str_new(s, len, str));
+            UNPACK_PUSH(rb_str_new(s, len));
 	    s += len;
 	    break;
 
@@ -1279,13 +1070,14 @@ pack_unpack(VALUE str, VALUE fmt)
 		if (p[-1] == '*' || len > (send - s) * 8)
 		    len = (send - s) * 8;
 		bits = 0;
-		UNPACK_PUSH(bitstr = rb_usascii_str_new(0, len));
+		bitstr = rb_usascii_str_new(0, len);
 		t = RSTRING_PTR(bitstr);
 		for (i=0; i<len; i++) {
 		    if (i & 7) bits >>= 1;
 		    else bits = (unsigned char)*s++;
 		    *t++ = (bits & 1) ? '1' : '0';
 		}
+		UNPACK_PUSH(bitstr);
 	    }
 	    break;
 
@@ -1299,13 +1091,14 @@ pack_unpack(VALUE str, VALUE fmt)
 		if (p[-1] == '*' || len > (send - s) * 8)
 		    len = (send - s) * 8;
 		bits = 0;
-		UNPACK_PUSH(bitstr = rb_usascii_str_new(0, len));
+		bitstr = rb_usascii_str_new(0, len);
 		t = RSTRING_PTR(bitstr);
 		for (i=0; i<len; i++) {
 		    if (i & 7) bits <<= 1;
 		    else bits = (unsigned char)*s++;
 		    *t++ = (bits & 128) ? '1' : '0';
 		}
+		UNPACK_PUSH(bitstr);
 	    }
 	    break;
 
@@ -1319,7 +1112,7 @@ pack_unpack(VALUE str, VALUE fmt)
 		if (p[-1] == '*' || len > (send - s) * 2)
 		    len = (send - s) * 2;
 		bits = 0;
-		UNPACK_PUSH(bitstr = rb_usascii_str_new(0, len));
+		bitstr = rb_usascii_str_new(0, len);
 		t = RSTRING_PTR(bitstr);
 		for (i=0; i<len; i++) {
 		    if (i & 1)
@@ -1328,6 +1121,7 @@ pack_unpack(VALUE str, VALUE fmt)
 			bits = (unsigned char)*s++;
 		    *t++ = hexdigits[bits & 15];
 		}
+		UNPACK_PUSH(bitstr);
 	    }
 	    break;
 
@@ -1341,7 +1135,7 @@ pack_unpack(VALUE str, VALUE fmt)
 		if (p[-1] == '*' || len > (send - s) * 2)
 		    len = (send - s) * 2;
 		bits = 0;
-		UNPACK_PUSH(bitstr = rb_usascii_str_new(0, len));
+		bitstr = rb_usascii_str_new(0, len);
 		t = RSTRING_PTR(bitstr);
 		for (i=0; i<len; i++) {
 		    if (i & 1)
@@ -1350,6 +1144,7 @@ pack_unpack(VALUE str, VALUE fmt)
 			bits = (unsigned char)*s++;
 		    *t++ = hexdigits[(bits >> 4) & 15];
 		}
+		UNPACK_PUSH(bitstr);
 	    }
 	    break;
 
@@ -1552,7 +1347,7 @@ pack_unpack(VALUE str, VALUE fmt)
 
 	  case 'u':
 	    {
-		VALUE buf = infected_str_new(0, (send - s)*3/4, str);
+                VALUE buf = rb_str_new(0, (send - s)*3/4);
 		char *ptr = RSTRING_PTR(buf);
 		long total = 0;
 
@@ -1607,7 +1402,7 @@ pack_unpack(VALUE str, VALUE fmt)
 
 	  case 'm':
 	    {
-		VALUE buf = infected_str_new(0, (send - s + 3)*3/4, str); /* +3 is for skipping paddings */
+                VALUE buf = rb_str_new(0, (send - s + 3)*3/4); /* +3 is for skipping paddings */
 		char *ptr = RSTRING_PTR(buf);
 		int a = -1,b = -1,c = 0,d = 0;
 		static signed char b64_xtable[256];
@@ -1688,8 +1483,9 @@ pack_unpack(VALUE str, VALUE fmt)
 
 	  case 'M':
 	    {
-		VALUE buf = infected_str_new(0, send - s, str);
+                VALUE buf = rb_str_new(0, send - s);
 		char *ptr = RSTRING_PTR(buf), *ss = s;
+		int csum = 0;
 		int c1, c2;
 
 		while (s < send) {
@@ -1701,18 +1497,19 @@ pack_unpack(VALUE str, VALUE fmt)
 			    if ((c1 = hex2num(*s)) == -1) break;
 			    if (++s == send) break;
 			    if ((c2 = hex2num(*s)) == -1) break;
-			    *ptr++ = castchar(c1 << 4 | c2);
+			    csum |= *ptr++ = castchar(c1 << 4 | c2);
 			}
 		    }
 		    else {
-			*ptr++ = *s;
+			csum |= *ptr++ = *s;
 		    }
 		    s++;
 		    ss = s;
 		}
 		rb_str_set_len(buf, ptr - RSTRING_PTR(buf));
 		rb_str_buf_cat(buf, ss, send-ss);
-		ENCODING_CODERANGE_SET(buf, rb_ascii8bit_encindex(), ENC_CODERANGE_VALID);
+		csum = ISASCII(csum) ? ENC_CODERANGE_7BIT : ENC_CODERANGE_VALID;
+		ENCODING_CODERANGE_SET(buf, rb_ascii8bit_encindex(), csum);
 		UNPACK_PUSH(buf);
 	    }
 	    break;
@@ -1755,7 +1552,7 @@ pack_unpack(VALUE str, VALUE fmt)
 		    while (p < pend) {
 			if (RB_TYPE_P(*p, T_STRING) && RSTRING_PTR(*p) == t) {
 			    if (len < RSTRING_LEN(*p)) {
-				tmp = rb_tainted_str_new(t, len);
+                                tmp = rb_str_new(t, len);
 				str_associate(tmp, a);
 			    }
 			    else {
@@ -1829,13 +1626,25 @@ pack_unpack(VALUE str, VALUE fmt)
 	    break;
 
 	  default:
-	    rb_warning("unknown unpack directive '%c' in '%s'",
-		type, RSTRING_PTR(fmt));
+            unknown_directive("unpack", type, fmt);
 	    break;
 	}
     }
 
     return ary;
+}
+
+static VALUE
+pack_unpack(rb_execution_context_t *ec, VALUE str, VALUE fmt)
+{
+    int mode = rb_block_given_p() ? UNPACK_BLOCK : UNPACK_ARRAY;
+    return pack_unpack_internal(str, fmt, mode);
+}
+
+static VALUE
+pack_unpack1(rb_execution_context_t *ec, VALUE str, VALUE fmt)
+{
+    return pack_unpack_internal(str, fmt, UNPACK_1);
 }
 
 int
@@ -1882,7 +1691,7 @@ rb_uv_to_utf8(char buf[6], unsigned long uv)
     }
     rb_raise(rb_eRangeError, "pack(U): value out of range");
 
-    UNREACHABLE;
+    UNREACHABLE_RETURN(Qnil);
 }
 
 static const unsigned long utf8_limits[] = {
@@ -1945,11 +1754,12 @@ utf8_to_uv(const char *p, long *lenp)
     return uv;
 }
 
+#include "pack.rbinc"
+
 void
 Init_pack(void)
 {
-    rb_define_method(rb_cArray, "pack", pack_pack, 1);
-    rb_define_method(rb_cString, "unpack", pack_unpack, 1);
+    load_pack();
 
     id_associated = rb_make_internal_id();
 }

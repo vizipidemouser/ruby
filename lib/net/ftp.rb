@@ -17,7 +17,7 @@
 
 require "socket"
 require "monitor"
-require "net/protocol"
+require_relative "protocol"
 require "time"
 begin
   require "openssl"
@@ -77,7 +77,7 @@ module Net
   # - #rename
   # - #delete
   #
-  class FTP
+  class FTP < Protocol
     include MonitorMixin
     if defined?(OpenSSL::SSL)
       include OpenSSL
@@ -110,6 +110,13 @@ module Net
     # object cannot open a connection in this many seconds, it raises a
     # Net::OpenTimeout exception. The default value is +nil+.
     attr_accessor :open_timeout
+
+    # Number of seconds to wait for the TLS handshake. Any number
+    # may be used, including Floats for fractional seconds. If the FTP
+    # object cannot complete the TLS handshake in this many seconds, it
+    # raises a Net::OpenTimeout exception. The default value is +nil+.
+    # If +ssl_handshake_timeout+ is +nil+, +open_timeout+ is used instead.
+    attr_accessor :ssl_handshake_timeout
 
     # Number of seconds to wait for one block to be read (via one read(2)
     # call). Any number may be used, including Floats for fractional
@@ -194,6 +201,10 @@ module Net
     #                 See Net::FTP#open_timeout for details.  Default: +nil+.
     # read_timeout::  Number of seconds to wait for one block to be read.
     #                 See Net::FTP#read_timeout for details.  Default: +60+.
+    # ssl_handshake_timeout::  Number of seconds to wait for the TLS
+    #                          handshake.
+    #                          See Net::FTP#ssl_handshake_timeout for
+    #                          details.  Default: +nil+.
     # debug_mode::  When +true+, all traffic to and from the server is
     #               written to +$stdout+.  Default: +false+.
     #
@@ -219,6 +230,10 @@ module Net
         if defined?(VerifyCallbackProc)
           @ssl_context.verify_callback = VerifyCallbackProc
         end
+        @ssl_context.session_cache_mode =
+          OpenSSL::SSL::SSLContext::SESSION_CACHE_CLIENT |
+          OpenSSL::SSL::SSLContext::SESSION_CACHE_NO_INTERNAL_STORE
+        @ssl_context.session_new_cb = proc {|sock, sess| @ssl_session = sess }
         @ssl_session = nil
         if options[:private_data_connection].nil?
           @private_data_connection = true
@@ -231,6 +246,7 @@ module Net
           raise ArgumentError,
             "private_data_connection can be set to true only when ssl is enabled"
         end
+        @private_data_connection = false
       end
       @binary = true
       if options[:passive].nil?
@@ -247,15 +263,10 @@ module Net
       @bare_sock = @sock = NullSocket.new
       @logged_in = false
       @open_timeout = options[:open_timeout]
+      @ssl_handshake_timeout = options[:ssl_handshake_timeout]
       @read_timeout = options[:read_timeout] || 60
       if host
-        if options[:port]
-          connect(host, options[:port] || FTP_PORT)
-        else
-          # spec/rubyspec/library/net/ftp/initialize_spec.rb depends on
-          # the number of arguments passed to connect....
-          connect(host)
-        end
+        connect(host, options[:port] || FTP_PORT)
         if options[:username]
           login(options[:username], options[:password], options[:account])
         end
@@ -303,13 +314,13 @@ module Net
 
     # Obsolete
     def return_code # :nodoc:
-      $stderr.puts("warning: Net::FTP#return_code is obsolete and do nothing")
+      warn("Net::FTP#return_code is obsolete and do nothing", uplevel: 1)
       return "\n"
     end
 
     # Obsolete
     def return_code=(s) # :nodoc:
-      $stderr.puts("warning: Net::FTP#return_code= is obsolete and do nothing")
+      warn("Net::FTP#return_code= is obsolete and do nothing", uplevel: 1)
     end
 
     # Constructs a socket with +host+ and +port+.
@@ -318,12 +329,12 @@ module Net
     # SOCKS_SERVER, then a SOCKSSocket is returned, else a Socket is
     # returned.
     def open_socket(host, port) # :nodoc:
-      return Timeout.timeout(@open_timeout, Net::OpenTimeout) {
+      return Timeout.timeout(@open_timeout, OpenTimeout) {
         if defined? SOCKSSocket and ENV["SOCKS_SERVER"]
           @passive = true
-          sock = SOCKSSocket.open(host, port)
+          SOCKSSocket.open(host, port)
         else
-          sock = Socket.tcp(host, port)
+          Socket.tcp(host, port)
         end
       }
     end
@@ -338,11 +349,10 @@ module Net
         # ProFTPD returns 425 for data connections if session is not reused.
         ssl_sock.session = @ssl_session
       end
-      ssl_sock.connect
+      ssl_socket_connect(ssl_sock, @ssl_handshake_timeout || @open_timeout)
       if @ssl_context.verify_mode != VERIFY_NONE
         ssl_sock.post_connection_check(@host)
       end
-      @ssl_session = ssl_sock.session
       return ssl_sock
     end
     private :start_tls_session
@@ -371,8 +381,8 @@ module Net
               voidcmd("PBSZ 0")
               voidcmd("PROT P")
             end
-          rescue OpenSSL::SSL::SSLError
-            close
+          rescue OpenSSL::SSL::SSLError, OpenTimeout
+            @sock.close
             raise
           end
         end
@@ -741,10 +751,10 @@ module Net
       if localfile
         if @resume
           rest_offset = File.size?(localfile)
-          f = open(localfile, "a")
+          f = File.open(localfile, "a")
         else
           rest_offset = nil
-          f = open(localfile, "w")
+          f = File.open(localfile, "w")
         end
       elsif !block_given?
         result = String.new
@@ -774,7 +784,7 @@ module Net
       f = nil
       result = nil
       if localfile
-        f = open(localfile, "w")
+        f = File.open(localfile, "w")
       elsif !block_given?
         result = String.new
       end
@@ -820,7 +830,7 @@ module Net
       else
         rest_offset = nil
       end
-      f = open(localfile)
+      f = File.open(localfile)
       begin
         f.binmode
         if rest_offset
@@ -839,7 +849,7 @@ module Net
     # passing in the transmitted data one line at a time.
     #
     def puttextfile(localfile, remotefile = File.basename(localfile), &block) # :yield: line
-      f = open(localfile)
+      f = File.open(localfile)
       begin
         storlines("STOR #{remotefile}", f, &block)
       ensure
@@ -1226,7 +1236,8 @@ module Net
 
     #
     # Returns the status (STAT command).
-    # pathname - when stat is invoked with pathname as a parameter it acts like
+    #
+    # pathname:: when stat is invoked with pathname as a parameter it acts like
     #            list but alot faster and over the same tcp session.
     #
     def status(pathname = nil)
@@ -1284,6 +1295,41 @@ module Net
     #
     def site(arg)
       cmd = "SITE " + arg
+      voidcmd(cmd)
+    end
+
+    #
+    # Issues a FEAT command
+    #
+    # Returns an array of supported optional features
+    #
+    def features
+      resp = sendcmd("FEAT")
+      if !resp.start_with?("211")
+        raise FTPReplyError, resp
+      end
+
+      feats = []
+      resp.split("\n").each do |line|
+        next if !line.start_with?(' ') # skip status lines
+
+        feats << line.strip
+      end
+
+      return feats
+    end
+
+    #
+    # Issues an OPTS command
+    # - name Should be the name of the option to set
+    # - params is any optional parameters to supply with the option
+    #
+    # example: option('UTF8', 'ON') => 'OPTS UTF8 ON'
+    #
+    def option(name, params = nil)
+      cmd = "OPTS #{name}"
+      cmd += " #{params}" if params
+
       voidcmd(cmd)
     end
 
@@ -1421,7 +1467,7 @@ module Net
           s = super(len, String.new, true)
           return s.empty? ? nil : s
         else
-          result = ""
+          result = String.new
           while s = super(DEFAULT_BLOCKSIZE, String.new, true)
             break if s.empty?
             result << s
@@ -1446,7 +1492,7 @@ module Net
 
     if defined?(OpenSSL::SSL::SSLSocket)
       class BufferedSSLSocket <  BufferedSocket
-        def initialize(*args)
+        def initialize(*args, **options)
           super
           @is_shutdown = false
         end

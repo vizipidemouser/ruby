@@ -1,9 +1,13 @@
-# frozen_string_literal: false
+# frozen_string_literal: true
 # date.rb: Written by Tadayoshi Funaba 1998-2011
 
 require 'date_core'
 
 class Date
+
+  def infinite?
+    false
+  end
 
   class Infinity < Numeric # :nodoc:
 
@@ -15,17 +19,17 @@ class Date
 
     protected :d
 
-    def zero? () false end
-    def finite? () false end
-    def infinite? () d.nonzero? end
-    def nan? () d.zero? end
+    def zero?() false end
+    def finite?() false end
+    def infinite?() d.nonzero? end
+    def nan?() d.zero? end
 
     def abs() self.class.new end
 
-    def -@ () self.class.new(-d) end
-    def +@ () self.class.new(+d) end
+    def -@() self.class.new(-d) end
+    def +@() self.class.new(+d) end
 
-    def <=> (other)
+    def <=>(other)
       case other
       when Infinity; return d <=> other.d
       when Numeric; return d
